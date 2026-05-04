@@ -111,22 +111,38 @@ jobs:
         with:
           validate-wrappers: false
 
-      # ── 7. Decode keystore from secrets ────────────────────────────────
-      - name: Decode keystore
+      # ── 7. Set up signing keystore ───────────────────────────────────
+      - name: Set up signing keystore
         if: steps.check.outputs.skip != 'true'
         run: |
-          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > ${{ github.workspace }}/release.keystore
+          KEYSTORE_PATH="${{ github.workspace }}/release.keystore"
 
-      # ── 8. Create signing properties ───────────────────────────────────
-      - name: Create signing properties
-        if: steps.check.outputs.skip != 'true'
-        run: |
+          if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
+            echo "🔑 Using keystore from secrets..."
+            echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > "$KEYSTORE_PATH"
+            KS_PASSWORD="${{ secrets.KEYSTORE_PASSWORD }}"
+            KS_ALIAS="${{ secrets.KEY_ALIAS }}"
+            KS_KEY_PASSWORD="${{ secrets.KEY_PASSWORD }}"
+          else
+            echo "⚠️  No KEYSTORE_BASE64 secret found — generating a temporary keystore..."
+            keytool -genkeypair -v \
+              -keystore "$KEYSTORE_PATH" \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -alias fdroid-temp \
+              -storepass temp-store-pass \
+              -keypass temp-key-pass \
+              -dname "CN=Temp, OU=FOSS, O=Temp, L=Unknown, ST=Unknown, C=US"
+            KS_PASSWORD="temp-store-pass"
+            KS_ALIAS="fdroid-temp"
+            KS_KEY_PASSWORD="temp-key-pass"
+          fi
+
           mkdir -p signing
           cat > signing/release.properties << EOF
-          storeFile=${{ github.workspace }}/release.keystore
-          storePassword=${{ secrets.KEYSTORE_PASSWORD }}
-          keyAlias=${{ secrets.KEY_ALIAS }}
-          keyPassword=${{ secrets.KEY_PASSWORD }}
+          storeFile=$KEYSTORE_PATH
+          storePassword=$KS_PASSWORD
+          keyAlias=$KS_ALIAS
+          keyPassword=$KS_KEY_PASSWORD
           EOF
 
           # Also create legacy properties pointing to same keystore
