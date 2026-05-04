@@ -138,12 +138,9 @@ jobs:
           fi
 
           mkdir -p signing
-          cat > signing/release.properties << EOF
-          storeFile=$KEYSTORE_PATH
-          storePassword=$KS_PASSWORD
-          keyAlias=$KS_ALIAS
-          keyPassword=$KS_KEY_PASSWORD
-          EOF
+          printf 'storeFile=%s\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
+            "$KEYSTORE_PATH" "$KS_PASSWORD" "$KS_ALIAS" "$KS_KEY_PASSWORD" \
+            > signing/release.properties
 
           # Also create legacy properties pointing to same keystore
           cp signing/release.properties signing/legacy.properties
