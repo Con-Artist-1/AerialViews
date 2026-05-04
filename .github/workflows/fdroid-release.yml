@@ -114,15 +114,17 @@ jobs:
       # ── 7. Set up signing keystore ───────────────────────────────────
       - name: Set up signing keystore
         if: steps.check.outputs.skip != 'true'
+        env:
+          KS_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KS_STORE_PASS: ${{ secrets.KEYSTORE_PASSWORD }}
+          KS_ALIAS_NAME: ${{ secrets.KEY_ALIAS }}
+          KS_KEY_PASS: ${{ secrets.KEY_PASSWORD }}
         run: |
           KEYSTORE_PATH="${{ github.workspace }}/release.keystore"
 
-          if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
+          if [ -n "$KS_BASE64" ]; then
             echo "🔑 Using keystore from secrets..."
-            echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > "$KEYSTORE_PATH"
-            KS_PASSWORD="${{ secrets.KEYSTORE_PASSWORD }}"
-            KS_ALIAS="${{ secrets.KEY_ALIAS }}"
-            KS_KEY_PASSWORD="${{ secrets.KEY_PASSWORD }}"
+            echo "$KS_BASE64" | base64 -d > "$KEYSTORE_PATH"
           else
             echo "⚠️  No KEYSTORE_BASE64 secret found — generating a temporary keystore..."
             keytool -genkeypair -v \
@@ -132,14 +134,14 @@ jobs:
               -storepass temp-store-pass \
               -keypass temp-key-pass \
               -dname "CN=Temp, OU=FOSS, O=Temp, L=Unknown, ST=Unknown, C=US"
-            KS_PASSWORD="temp-store-pass"
-            KS_ALIAS="fdroid-temp"
-            KS_KEY_PASSWORD="temp-key-pass"
+            KS_STORE_PASS="temp-store-pass"
+            KS_ALIAS_NAME="fdroid-temp"
+            KS_KEY_PASS="temp-key-pass"
           fi
 
           mkdir -p signing
           printf 'storeFile=%s\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
-            "$KEYSTORE_PATH" "$KS_PASSWORD" "$KS_ALIAS" "$KS_KEY_PASSWORD" \
+            "$KEYSTORE_PATH" "$KS_STORE_PASS" "$KS_ALIAS_NAME" "$KS_KEY_PASS" \
             > signing/release.properties
 
           # Also create legacy properties pointing to same keystore
