@@ -1,0 +1,190 @@
+name: F-Droid Release Build
+
+on:
+  # Check for new upstream releases every 6 hours
+  schedule:
+    - cron: '0 */6 * * *'
+  # Allow manual trigger with optional tag override
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: 'Upstream tag to build (leave empty to auto-detect latest)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+env:
+  UPSTREAM_REPO: theothernt/AerialViews
+
+jobs:
+  check-and-build:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Detect the latest upstream release tag ──────────────────────
+      - name: Determine upstream tag
+        id: tag
+        run: |
+          if [ -n "${{ github.event.inputs.upstream_tag }}" ]; then
+            TAG="${{ github.event.inputs.upstream_tag }}"
+          else
+            TAG=$(curl -s "https://api.github.com/repos/${{ env.UPSTREAM_REPO }}/releases/latest" \
+              | jq -r '.tag_name')
+          fi
+          echo "upstream_tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "📌 Target upstream tag: $TAG"
+
+      # ── 2. Check if we already released this version ───────────────────
+      - name: Check if release already exists
+        id: check
+        run: |
+          RELEASE_TAG="fdroid-${{ steps.tag.outputs.upstream_tag }}"
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/${RELEASE_TAG}")
+          if [ "$STATUS" = "200" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "⏭️  Release $RELEASE_TAG already exists — skipping."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "🆕 Release $RELEASE_TAG not found — will build."
+          fi
+
+      # ── 3. Checkout upstream source at the target tag ──────────────────
+      - name: Checkout upstream source
+        if: steps.check.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UPSTREAM_REPO }}
+          ref: ${{ steps.tag.outputs.upstream_tag }}
+          fetch-depth: 0
+
+      # ── 4. Strip proprietary / non-FOSS components ─────────────────────
+      - name: Strip proprietary libraries
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          echo "🧹 Removing google-services.json..."
+          rm -f app/google-services.json
+
+          echo "🧹 Removing common (proprietary) FirebaseHelper..."
+          rm -rf app/src/common/
+
+          echo "🧹 Removing Firebase / Google Services plugin references from root build.gradle.kts..."
+          # Comment out the google-services & firebase plugins in root build.gradle.kts
+          sed -i 's|alias(libs.plugins.google.services) apply false|// alias(libs.plugins.google.services) apply false  // STRIPPED|g' build.gradle.kts
+          sed -i 's|alias(libs.plugins.firebase.crashlytics) apply false|// alias(libs.plugins.firebase.crashlytics) apply false  // STRIPPED|g' build.gradle.kts
+          sed -i 's|alias(libs.plugins.firebase.perf) apply false|// alias(libs.plugins.firebase.perf) apply false  // STRIPPED|g' build.gradle.kts
+
+          echo "🧹 Removing Firebase / Google Services plugin references from app build.gradle.kts..."
+          sed -i 's|alias(libs.plugins.google.services)|// alias(libs.plugins.google.services)  // STRIPPED|g' app/build.gradle.kts
+          sed -i 's|alias(libs.plugins.firebase.crashlytics)|// alias(libs.plugins.firebase.crashlytics)  // STRIPPED|g' app/build.gradle.kts
+          sed -i 's|alias(libs.plugins.firebase.perf)|// alias(libs.plugins.firebase.perf)  // STRIPPED|g' app/build.gradle.kts
+
+          echo "🧹 Removing Firebase dependency block from app build.gradle.kts..."
+          # Remove the Firebase flavor-specific dependency block (lines referencing firebaseFlavors)
+          sed -i '/\/\/ Support all favors except F-Droid/,/^[[:space:]]*}/d' app/build.gradle.kts
+
+          echo "🧹 Disabling analytics/crashlytics/perf manifest placeholders in release build type..."
+          sed -i 's|manifestPlaceholders\["analyticsCollectionEnabled"\] = true|manifestPlaceholders["analyticsCollectionEnabled"] = false|g' app/build.gradle.kts
+          sed -i 's|manifestPlaceholders\["crashlyticsCollectionEnabled"\] = true|manifestPlaceholders["crashlyticsCollectionEnabled"] = false|g' app/build.gradle.kts
+          sed -i 's|manifestPlaceholders\["performanceCollectionEnabled"\] = true|manifestPlaceholders["performanceCollectionEnabled"] = false|g' app/build.gradle.kts
+
+          echo "✅ Proprietary components stripped."
+
+      # ── 5. Set up JDK ──────────────────────────────────────────────────
+      - name: Set up JDK 21
+        if: steps.check.outputs.skip != 'true'
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      # ── 6. Set up Gradle ───────────────────────────────────────────────
+      - name: Setup Gradle
+        if: steps.check.outputs.skip != 'true'
+        uses: gradle/actions/setup-gradle@v4
+
+      # ── 7. Decode keystore from secrets ────────────────────────────────
+      - name: Decode keystore
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > ${{ github.workspace }}/release.keystore
+
+      # ── 8. Create signing properties ───────────────────────────────────
+      - name: Create signing properties
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          mkdir -p signing
+          cat > signing/release.properties << EOF
+          storeFile=${{ github.workspace }}/release.keystore
+          storePassword=${{ secrets.KEYSTORE_PASSWORD }}
+          keyAlias=${{ secrets.KEY_ALIAS }}
+          keyPassword=${{ secrets.KEY_PASSWORD }}
+          EOF
+
+          # Also create legacy properties pointing to same keystore
+          cp signing/release.properties signing/legacy.properties
+
+      # ── 9. Create dummy secrets.properties ─────────────────────────────
+      - name: Create secrets.properties
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          cat > secrets.properties << EOF
+          openWeather=
+          openWeatherDebug=
+          EOF
+
+      # ── 10. Build fdroidRelease APK ────────────────────────────────────
+      - name: Build F-Droid Release APK
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleFdroidRelease --no-daemon --stacktrace
+
+      # ── 11. Locate and rename the APK ──────────────────────────────────
+      - name: Prepare APK artifact
+        if: steps.check.outputs.skip != 'true'
+        id: apk
+        run: |
+          APK_PATH=$(find app/build/outputs/apk/fdroid/release -name "*.apk" | head -1)
+          RELEASE_TAG="fdroid-${{ steps.tag.outputs.upstream_tag }}"
+          APK_NAME="AerialViews-${RELEASE_TAG}.apk"
+          cp "$APK_PATH" "$APK_NAME"
+          echo "apk_path=$APK_NAME" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "📦 APK ready: $APK_NAME"
+
+      # ── 12. Create GitHub Release ──────────────────────────────────────
+      - name: Create GitHub Release
+        if: steps.check.outputs.skip != 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.apk.outputs.release_tag }}
+          name: "Aerial Views F-Droid ${{ steps.tag.outputs.upstream_tag }}"
+          body: |
+            ## 🛰️ Aerial Views — F-Droid (FOSS) Build
+
+            **Upstream version:** `${{ steps.tag.outputs.upstream_tag }}`
+            **Source:** [theothernt/AerialViews@${{ steps.tag.outputs.upstream_tag }}](https://github.com/${{ env.UPSTREAM_REPO }}/releases/tag/${{ steps.tag.outputs.upstream_tag }})
+
+            ### Changes from upstream
+            - 🚫 Removed Firebase (Analytics, Crashlytics, Performance Monitoring)
+            - 🚫 Removed Google Play Services / `google-services.json`
+            - ✅ Built using the `fdroid` product flavor (FOSS-compatible)
+            - 🔑 Signed with custom keystore
+
+            ---
+            *This is an automated FOSS build. All proprietary Google libraries have been stripped.*
+          files: ${{ steps.apk.outputs.apk_path }}
+          draft: false
+          prerelease: false
+
+      # ── 13. Cleanup ────────────────────────────────────────────────────
+      - name: Cleanup keystore
+        if: always()
+        run: |
+          rm -f ${{ github.workspace }}/release.keystore
+          rm -f signing/release.properties
+          rm -f signing/legacy.properties
