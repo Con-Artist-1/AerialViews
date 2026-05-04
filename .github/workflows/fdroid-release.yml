@@ -83,8 +83,11 @@ jobs:
           sed -i 's|alias(libs.plugins.firebase.perf)|// alias(libs.plugins.firebase.perf)  // STRIPPED|g' app/build.gradle.kts
 
           echo "🧹 Removing Firebase dependency block from app build.gradle.kts..."
-          # Remove the Firebase flavor-specific dependency block (lines referencing firebaseFlavors)
-          sed -i '/\/\/ Support all favors except F-Droid/,/^[[:space:]]*}/d' app/build.gradle.kts
+          # Remove the Firebase flavor-specific dependency lines precisely
+          sed -i '/\/\/ Support all favors except F-Droid/d' app/build.gradle.kts
+          sed -i '/firebaseFlavors/d' app/build.gradle.kts
+          sed -i '/firebase\.bom/d' app/build.gradle.kts
+          sed -i '/bundles\.firebase/d' app/build.gradle.kts
 
           echo "🧹 Disabling analytics/crashlytics/perf manifest placeholders in release build type..."
           sed -i 's|manifestPlaceholders\["analyticsCollectionEnabled"\] = true|manifestPlaceholders["analyticsCollectionEnabled"] = false|g' app/build.gradle.kts
