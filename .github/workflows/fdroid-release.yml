@@ -105,6 +105,8 @@ jobs:
       - name: Setup Gradle
         if: steps.check.outputs.skip != 'true'
         uses: gradle/actions/setup-gradle@v4
+        with:
+          validate-wrappers: false
 
       # ── 7. Decode keystore from secrets ────────────────────────────────
       - name: Decode keystore
